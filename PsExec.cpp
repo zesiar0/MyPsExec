@@ -19,11 +19,11 @@ VOID OutputError(LPCTSTR, DWORD);
 BOOL ExecuteCommand();
 
 int wmain(int argc, wchar_t* argv[]) {
-    LPCWSTR lpwsHost        = TEXT("192.168.111.137");
-    LPCWSTR lpwsUsername    = TEXT("Administrator");
-    LPCWSTR lpwsPassword    = TEXT("zengjiahua123");
+    LPCWSTR lpwsHost        = TEXT("{{ip}}");
+    LPCWSTR lpwsUsername    = TEXT("{{username})");
+    LPCWSTR lpwsPassword    = TEXT("{{password}}");
     LPCWSTR lpwsSrcPath     = TEXT("D:\\windows\\repos\\MyPsExec\\x64\\Release\\PsExecService.exe");
-    LPCWSTR lpwsDstPath     = TEXT("\\\\192.168.111.137\\admin$\\PsExecService.exe");
+    LPCWSTR lpwsDstPath     = TEXT("\\\\{{ip}}\\admin$\\PsExecService.exe");
     LPCWSTR lpwsServiceName = TEXT("PSEXESVC");
     LPCWSTR lpwsServicePath = TEXT("C:\\Windows\\PsExecService.exe");
 
@@ -168,7 +168,7 @@ BOOL CreateStdNamedPipe(PHANDLE lpPipe, LPCTSTR lpPipeName) {
 
 BOOL ExecuteCommand() {
     HANDLE	    hStdoutPipe         = INVALID_HANDLE_VALUE;
-    LPCTSTR     lpszStdoutPipeName  = TEXT("\\\\192.168.111.137\\pipe\\PSEXEC");
+    LPCTSTR     lpszStdoutPipeName  = TEXT("\\\\{{ip}}\\pipe\\PSEXEC");
     TCHAR	    chBuf[BUFSIZE]      = { 0 };
     BOOL	    fSuccess            = FALSE;
     DWORD	    length              = 0;
