@@ -2,6 +2,7 @@
 #include<Windows.h>
 #include<stdio.h>
 #include<tchar.h>
+#include <strsafe.h>
 #include<string>
 
 #pragma comment(lib, "ws2_32")
@@ -11,43 +12,57 @@
 #define BUFSIZE 512
 #define SLEEP_TIME 500
 
+DWORD WINAPI StdinThread(HANDLE stdinNamedPipe);
+DWORD WINAPI StdoutThread(HANDLE stdoutNamedPipe);
+
 DWORD ConnectSMBServer(LPCWSTR lpwsHost, LPCWSTR lpwsUserName, LPCWSTR lpwsPassword);
 BOOL UploadFileBySMB(LPCWSTR lpwsSrcPath, LPCWSTR lpwsDstPath);
 BOOL CreateServiceWithSCM(LPCWSTR lpwsSCMServer, LPCWSTR lpwsServiceName, LPCWSTR lpwsServicePath);
 BOOL CreateStdNamedPipe(LPHANDLE, LPCTSTR);
 VOID OutputError(LPCTSTR, DWORD);
-BOOL ExecuteCommand();
+BOOL ExecuteCommand(LPWSTR lpwsHost);
 
 int wmain(int argc, wchar_t* argv[]) {
-    LPCWSTR lpwsHost        = TEXT("{{ip}}");
+    /*LPCWSTR lpwsHost        = TEXT("{{ip}}");
     LPCWSTR lpwsUsername    = TEXT("{{username})");
     LPCWSTR lpwsPassword    = TEXT("{{password}}");
     LPCWSTR lpwsSrcPath     = TEXT("D:\\windows\\repos\\MyPsExec\\x64\\Release\\PsExecService.exe");
     LPCWSTR lpwsDstPath     = TEXT("\\\\{{ip}}\\admin$\\PsExecService.exe");
     LPCWSTR lpwsServiceName = TEXT("PSEXESVC");
-    LPCWSTR lpwsServicePath = TEXT("C:\\Windows\\PsExecService.exe");
+    LPCWSTR lpwsServicePath = TEXT("C:\\Windows\\PsExecService.exe");*/
 
-    if (ConnectSMBServer(lpwsHost, lpwsUsername, lpwsPassword) == 0) {
-        BOOL bRetVal = FALSE;
+    LPWSTR  lpwsHost        = argv[1];
+    LPWSTR  lpwsUsername    = argv[2];
+    LPWSTR  lpwsPassword    = argv[3];
+    LPWSTR  lpwsSrcPath     = argv[4];
+    LPWSTR  lpwsDstPath     = NULL;
+    LPCWSTR lpwsServiceName = L"PSEXEC";
+    LPCWSTR lpwsServicePath = L"%SystemRoot%\\PsExecService.exe";
 
-        bRetVal = UploadFileBySMB(lpwsSrcPath, lpwsDstPath);
-        if (bRetVal) {
-            std::cout << "Upload Success!" << std::endl;
+    lpwsDstPath = (LPWSTR)malloc(MAX_PATH * sizeof(WCHAR));
+    if (!lpwsDstPath) {
+        return NULL;
+    }
+    StringCchPrintf(lpwsDstPath, MAX_PATH, TEXT("\\\\%s\\admin$\\PsExecService.exe"), lpwsHost);
+
+    if (!ConnectSMBServer(lpwsHost, lpwsUsername, lpwsPassword)) {
+        
+        if (!UploadFileBySMB(lpwsSrcPath, lpwsDstPath)) {
+            wprintf(L"[*] Upload Successfully!\n");
             CreateServiceWithSCM(lpwsHost, lpwsServiceName, lpwsServicePath);
         }
         else {
-            std::cout << "Upload Failed! Error: " << GetLastError() << std::endl;
+            wprintf(L"[!] Upload Failed! Error: %d\n", GetLastError());
             return GetLastError();
         }
     }
 
-
     Sleep(SLEEP_TIME);
-    if (!ExecuteCommand()) {
-        _tprintf(TEXT("[!] ExecuteCommand error! ending..."));
-        return -1;
+    if (!ExecuteCommand(lpwsHost)) {
+        wprintf(L"[!] ExecuteCommand error! ending...\n");
+        return GetLastError();
     }
-    _tprintf(TEXT("[*] All successfully!"));
+    wprintf(L"[*] All successfully!");
 
     return 0;
 }
@@ -63,7 +78,7 @@ DWORD ConnectSMBServer(LPCWSTR lpwsHost, LPCWSTR lpwsUserName, LPCWSTR lpwsPassw
     DWORD dwFlags;
 
     ZeroMemory(&nr, sizeof(NETRESOURCE));
-    swprintf(lpwsIPC, 100, TEXT("\\\\%s\\admin$"), lpwsHost);
+    StringCchPrintf(lpwsIPC, 100, TEXT("\\\\%s\\admin$"), lpwsHost);
 
     nr.dwType       = RESOURCETYPE_ANY;
     nr.lpLocalName  = NULL;
@@ -80,7 +95,7 @@ DWORD ConnectSMBServer(LPCWSTR lpwsHost, LPCWSTR lpwsUserName, LPCWSTR lpwsPassw
     }
 
 
-    wprintf(L"[*] WNetAddConnection2 failed with error: %u\n", dwRetVal);
+    wprintf(L"[!] WNetAddConnection2 failed with error: %d\n", dwRetVal);
     return -1;
 }
 
@@ -91,7 +106,7 @@ BOOL UploadFileBySMB(LPCWSTR lpwsSrcPath, LPCWSTR lpwsDstPath) {
 }
 
 BOOL CreateServiceWithSCM(LPCWSTR lpwsSCMServer, LPCWSTR lpwsServiceName, LPCWSTR lpwsServicePath) {
-    std::wcout << TEXT("Will Create Service ") << lpwsServiceName << std::endl;
+    wprintf(L"[*] Create Service %s\n", lpwsServiceName);
 
     SC_HANDLE hSCM;
     SC_HANDLE hService;
@@ -99,7 +114,7 @@ BOOL CreateServiceWithSCM(LPCWSTR lpwsSCMServer, LPCWSTR lpwsServiceName, LPCWST
 
     hSCM = OpenSCManager(lpwsSCMServer, SERVICES_ACTIVE_DATABASE, SC_MANAGER_ALL_ACCESS);
     if (hSCM == NULL) {
-        std::cout << "OpenSCManager Error: " << GetLastError() << std::endl;
+        wprintf(L"[!] OpenSCManager Error: %d", GetLastError());
         return -1;
     }
 
@@ -117,31 +132,24 @@ BOOL CreateServiceWithSCM(LPCWSTR lpwsSCMServer, LPCWSTR lpwsServiceName, LPCWST
         NULL,
         NULL,
         NULL);
-    if (hService == NULL) {
 
-        std::cout << "CreateService Error: " << GetLastError() << std::endl;
+    if (hService == NULL) {
+        wprintf(L"[!] CreateService Error: %d", GetLastError());
         return -1;
     }
+    wprintf(L"[*] Create Service Success: %s\n", lpwsServicePath);
 
-
-    std::wcout << TEXT("Create Service Success: ") << lpwsServicePath << std::endl;
     hService = OpenService(hSCM, lpwsServiceName, GENERIC_ALL);
     if (hService == NULL) {
-        std::cout << "OpenService Error: " << GetLastError() << std::endl;
+        wprintf(L"[!] OpenService Error: %d\n", GetLastError());
         return -1;
     }
+    wprintf(L"[*] OpenService Success!\n");
 
-    std::cout << "OpenService Success!" << std::endl;
-
-    BOOL RetVal = StartService(hService, NULL, NULL);
-    if (RetVal) {
-
-        std::cout << "StartService Success!" << std::endl;
+    if (!StartService(hService, NULL, NULL)) {
+        wprintf(L"[!] StartService Fail! Error: %d\n", GetLastError());
     }
-    else {
-
-        std::cout << "StartService Fail! Error: " << GetLastError() << std::endl;
-    }
+    wprintf(L"[*] StartService Successfully!\n");
 
     return 0;
 }
@@ -166,17 +174,30 @@ BOOL CreateStdNamedPipe(PHANDLE lpPipe, LPCTSTR lpPipeName) {
     return !(*lpPipe == INVALID_HANDLE_VALUE);
 }
 
-BOOL ExecuteCommand() {
+BOOL ExecuteCommand(LPWSTR lpwsHost) {
     HANDLE	    hStdoutPipe         = INVALID_HANDLE_VALUE;
-    LPCTSTR     lpszStdoutPipeName  = TEXT("\\\\{{ip}}\\pipe\\PSEXEC");
+    HANDLE      hStdinPipe          = INVALID_HANDLE_VALUE;
+    HANDLE      hStdoutThread       = INVALID_HANDLE_VALUE;
+    HANDLE      hStdinThread        = INVALID_HANDLE_VALUE;
+    LPCTSTR     lpszStdoutPipeName  = L"\\\\{{ip}}\\pipe\\PSEXEC";
+    LPWSTR      lpszStdoutNamedPipe = NULL;
     TCHAR	    chBuf[BUFSIZE]      = { 0 };
     BOOL	    fSuccess            = FALSE;
     DWORD	    length              = 0;
+    DWORD	    cbRead              = 0;
+    DWORD	    cbToRead            = 0;
+    DWORD       dwStdoutThreadId    = 0;
+    DWORD       dwStdinThreadId     = 0;
     std::string command;
-    DWORD	    cbRead, cbToRead;
+
+    lpszStdoutNamedPipe = (LPWSTR)malloc(MAX_PATH * sizeof(WCHAR));
+    if (lpszStdoutNamedPipe == NULL) {
+        return FALSE;
+    }
+    StringCchPrintf(lpszStdoutNamedPipe, MAX_PATH, L"\\\\%s\\pipe\\PSEXEC", lpwsHost);
 
     hStdoutPipe = CreateFile(
-        lpszStdoutPipeName,
+        lpszStdoutNamedPipe,
         GENERIC_READ |
         GENERIC_WRITE,
         0,
@@ -207,7 +228,7 @@ BOOL ExecuteCommand() {
 
 
     while (true) {
-        std::cout << "\nPsExec>";
+        wprintf(L"\nPsExec>");
         getline(std::cin, command);
         cbToRead = command.length() * sizeof(TCHAR);
 
@@ -222,10 +243,30 @@ BOOL ExecuteCommand() {
             OutputError(TEXT("ReadFile"), GetLastError());
         }
 
-        printf("%s", chBuf);
+        wprintf(L"%s", chBuf);
+    }
+
+    hStdoutThread = CreateThread(
+        NULL,
+        0,
+        StdoutThread,
+        (LPVOID)hStdoutPipe,
+        0,
+        &dwStdoutThreadId);
+    if (hStdoutThread == NULL) {
+        wprintf(L"[!] Create Stdout Thread failed, GLE = %d.\n", GetLastError());
+        return FALSE;
     }
 
     CloseHandle(hStdoutPipe);
-
+    CloseHandle(hStdoutThread);
     return 0;
+}
+
+DWORD WINAPI StdinThread(HANDLE stdinNamedPipe) {
+    
+}
+
+DWORD WINAPI StdoutThread(HANDLE stdoutNamedPipe) {
+
 }
