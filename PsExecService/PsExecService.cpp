@@ -4,7 +4,7 @@
 #include <strsafe.h>
 
 #define BUFSIZE 512
-#define SERVICE_NAME "PsExec"
+#define SERVICE_NAME L"PsExec"
 #define SLEEP_TIME 500
 #define LOGFILE "C:\\log.txt"
 
@@ -18,23 +18,26 @@ BOOL ExecuteClientCommand();
 void ServiceMain(int argc, char** argv);
 void ServiceControlHandler(DWORD request);
 int InitService();
-int WriteToLog(const char* str);
+int WriteToLog(LPWSTR str);
 
-int main(int argc, CHAR* argv[]) {
-	LPSTR ServiceName = SERVICE_NAME;
-	SERVICE_TABLE_ENTRY DispatchTable[2];
-
-
-	DispatchTable[0].lpServiceName = ServiceName;
-	DispatchTable[0].lpServiceProc = (LPSERVICE_MAIN_FUNCTION)ServiceMain;
-
-	// the last element of DispatchTable must be NULL.
-	DispatchTable[1].lpServiceName = NULL;
-	DispatchTable[1].lpServiceProc = NULL;
-
-	// connect to the SCM
-	StartServiceCtrlDispatcher(DispatchTable);
-	return 0;
+//int main(int argc, CHAR* argv[]) {
+//	LPWSTR ServiceName = SERVICE_NAME;
+//	SERVICE_TABLE_ENTRY DispatchTable[2];
+//
+//
+//	DispatchTable[0].lpServiceName = ServiceName;
+//	DispatchTable[0].lpServiceProc = (LPSERVICE_MAIN_FUNCTION)ServiceMain;
+//
+//	// the last element of DispatchTable must be NULL.
+//	DispatchTable[1].lpServiceName = NULL;
+//	DispatchTable[1].lpServiceProc = NULL;
+//
+//	// connect to the SCM
+//	StartServiceCtrlDispatcher(DispatchTable);
+//	return 0;
+//}
+int main(int argc, WCHAR* argv) {
+	ExecuteClientCommand();
 }
 
 void ServiceMain(int argc, char** argv) {
@@ -49,11 +52,11 @@ void ServiceMain(int argc, char** argv) {
 	// register SCP and return service status handle.
 	svcStatusHandle = RegisterServiceCtrlHandler(SERVICE_NAME, (LPHANDLER_FUNCTION)ServiceControlHandler);
 	if (svcStatusHandle == 0) {
-		WriteToLog("RegisterServiceCtrHandler failed.");
+		WriteToLog(L"RegisterServiceCtrHandler failed.");
 		return;
 	}
 
-	WriteToLog("RegisterServiceCtrHandler success.");
+	WriteToLog(L"RegisterServiceCtrHandler success.");
 	// Initialize Service
 	int error = InitService();
 	if (error) {
@@ -72,10 +75,10 @@ void ServiceMain(int argc, char** argv) {
 
 	// do something you want to do in this while loop
 	MEMORYSTATUS memStatus;
-	char buffer[160];
+	WCHAR buffer[160];
 	GlobalMemoryStatus(&memStatus);
 	int availmb = memStatus.dwAvailPhys / 1024 / 1024;
-	sprintf_s(buffer, 100, "available memory is %dMB", availmb);
+	StringCchPrintf(buffer, 100, L"available memory is %dMB", availmb);
 	int result = WriteToLog(buffer);
 	if (result) {
 		svcStatus.dwCurrentState = SERVICE_STOPPED;
@@ -116,26 +119,30 @@ BOOL ExecuteClientCommand() {
 	HANDLE		hWritePipe = INVALID_HANDLE_VALUE;
 	LPCTSTR		lpszStdoutPipeName = TEXT("\\\\.\\pipe\\PSEXEC");
 	TCHAR		pWriteBuffer[BUFSIZE] = { 0 };
-	TCHAR		pReadBuffer[BUFSIZE] = { 0 };
+	CHAR		pReadBuffer[BUFSIZE] = { 0 };
 	DWORD		cbToWritten = 0;
-	LPSTR		lpCommandLine = (LPSTR)malloc(sizeof(LPSTR) * BUFSIZE);
+	LPTSTR		lpCommandLine = (LPWSTR)malloc(sizeof(LPWSTR) * BUFSIZE);
 	STARTUPINFO	si;
 	PROCESS_INFORMATION pi;
 
-	ZeroMemory(lpCommandLine, sizeof(LPSTR) * BUFSIZE);
+	if (lpCommandLine == NULL) {
+		WriteToLog(L"Malloc Failed.\n");
+		return FALSE;
+	}
+	ZeroMemory(lpCommandLine, BUFSIZE * sizeof(lpCommandLine));
 
 	if (!CreateStdNamedPipe(&hStdoutPipe, lpszStdoutPipeName)) {
 		OutputError(TEXT("CreateStdNamedPipe PSEXEC"), GetLastError());
 	}
-	_tprintf("[*] CreateNamedPipe successfully!\n");
+	WriteToLog(L"[*] CreateNamedPipe successfully!\n");
 
 	if (!ConnectNamedPipe(hStdoutPipe, NULL) ? TRUE : (GetLastError() == ERROR_PIPE_CONNECTED)) {
-		OutputError("ConnectNamePipe PSEXEC", GetLastError());
+		OutputError(L"ConnectNamePipe PSEXEC", GetLastError());
 
 		CloseHandle(hStdoutPipe);
 		return -1;
 	}
-	_tprintf("[*] ConnectNamedPipe sucessfully!\n");
+	WriteToLog(L"[*] ConnectNamedPipe sucessfully!\n");
 
 	SECURITY_ATTRIBUTES sa;
 	sa.nLength = sizeof(sa);
@@ -143,9 +150,9 @@ BOOL ExecuteClientCommand() {
 	sa.bInheritHandle = TRUE;
 
 	if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) {
-		OutputError("CreatePipe", GetLastError());
+		OutputError(L"CreatePipe", GetLastError());
 	}
-	_tprintf("[*] CreatePipe successfully!\n");
+	WriteToLog(L"[*] CreatePipe successfully!\n");
 
 	ZeroMemory(&si, sizeof(STARTUPINFO));
 	ZeroMemory(&pi, sizeof(PROCESS_INFORMATION));
@@ -161,19 +168,29 @@ BOOL ExecuteClientCommand() {
 	while (true) {
 		DWORD ExitCode = 0;
 		DWORD RSize = 0;
+		LPWSTR message = NULL;
 
-		ZeroMemory(pReadBuffer, sizeof(TCHAR) * BUFSIZE);
+		/*ZeroMemory(pReadBuffer, sizeof(TCHAR) * BUFSIZE);*/
 		// Read message from client.
+		WriteToLog(L"Start to read message from client.\n");
 		if (!ReadFile(hStdoutPipe, pReadBuffer, BUFSIZE, &RSize, NULL)) {
-			OutputError("[!] ReadFile from client failed!\n", GetLastError());
+			OutputError(L"[!] ReadFile from client failed!\n", GetLastError());
 			return -1;
 		}
-		_tprintf("[*] ReadFile from client successfully. message = %s\n", pReadBuffer);
+		message = (LPWSTR)malloc(MAX_PATH * sizeof(message));
+		if (message == NULL) {
+			return FALSE;
+		}
+		ZeroMemory(message, MAX_PATH * sizeof(message));
+		if (message == NULL) {
+			return FALSE;
+		}
+		StringCchPrintf(message, MAX_PATH, L"[*] ReadFile from client successfully. length = %d, message = %s\n", RSize, pReadBuffer);
+		WriteToLog(message);
 
 		/*================= subprocess ================*/
-		sprintf_s(lpCommandLine, BUFSIZE, "cmd.exe /c %s", pReadBuffer);
-		WriteToLog(lpCommandLine);
-		_tprintf("[*] Command line %s\n", lpCommandLine);
+
+		StringCchPrintf(lpCommandLine, BUFSIZE, L"cmd.exe /c %s", pReadBuffer);
 
 		if (!CreateProcess(
 			NULL,
@@ -187,32 +204,34 @@ BOOL ExecuteClientCommand() {
 			&si,
 			&pi
 		)) {
-			OutputError("CreateProcess", GetLastError());
+			OutputError(L"CreateProcess", GetLastError());
 			return -1;
 		}
 
+		WriteToLog(L"\nCreateProcess Successfully.\n");
 		WaitForSingleObject(pi.hProcess, INFINITE);
 
 		ZeroMemory(pWriteBuffer, sizeof(TCHAR) * BUFSIZE);
-		fSuccess = ReadFile(hReadPipe, pWriteBuffer, BUFSIZE * sizeof(TCHAR), &RSize, NULL);
+		/*fSuccess = ReadFile(hReadPipe, pWriteBuffer, BUFSIZE * sizeof(TCHAR), &RSize, NULL);
 
 		if (!fSuccess && GetLastError() != ERROR_MORE_DATA) {
 			break;
-		}
+		}*/
 
 		// Send result to client.
 		cbToWritten = (lstrlen(pWriteBuffer) + 1) * sizeof(TCHAR);
 		if (!WriteFile(hStdoutPipe, pWriteBuffer, RSize, &cbToWritten, NULL)) {
-			OutputError("WriteFile", GetLastError());
+			OutputError(L"WriteFile", GetLastError());
 			return -1;
 		}
 		WriteToLog(pWriteBuffer);
-		_tprintf("[*] WriteFile to client successfully!\n");
+		_tprintf(L"[*] WriteFile to client successfully!\n");
+		WriteToLog(L"[*] WriteFile to client successfully!\n");
 
 	}
 
 	// WaitForSingleObject(pi.hProcess, INFINITE);
-	_tprintf("Subprocess exits.\n");
+	_tprintf(L"Subprocess exits.\n");
 
 	CloseHandle(pi.hProcess);
 	CloseHandle(pi.hThread);
@@ -224,13 +243,13 @@ void ServiceControlHandler(DWORD request) {
 	switch (request)
 	{
 	case SERVICE_CONTROL_STOP:
-		WriteToLog("Service stopped.");
+		WriteToLog(L"Service stopped.");
 		svcStatus.dwWin32ExitCode = 0;
 		svcStatus.dwCurrentState = SERVICE_STOPPED;
 		SetServiceStatus(svcStatusHandle, &svcStatus);
 		return;
 	case SERVICE_CONTROL_SHUTDOWN:
-		WriteToLog("Service stopped.");
+		WriteToLog(L"Service stopped.");
 		svcStatus.dwCurrentState = 0;
 		svcStatus.dwCurrentState = SERVICE_STOPPED;
 		SetServiceStatus(svcStatusHandle, &svcStatus);
@@ -244,7 +263,7 @@ void ServiceControlHandler(DWORD request) {
 }
 
 int InitService() {
-	CHAR Message[] = "Service started.";
+	WCHAR Message[] = L"Service started.";
 	OutputDebugString(TEXT("Service started."));
 	int result;
 	result = WriteToLog(Message);
@@ -252,13 +271,13 @@ int InitService() {
 	return result;
 }
 
-int WriteToLog(const char* str) {
+int WriteToLog(LPCWSTR str) {
 	FILE* pFile;
 	fopen_s(&pFile, LOGFILE, "a+");
 	if (pFile == NULL) {
 		return -1;
 	}
-	fprintf_s(pFile, "%s\n", str);
+	fprintf_s(pFile, "%ws\n", str);
 	fclose(pFile);
 
 	return 0;
