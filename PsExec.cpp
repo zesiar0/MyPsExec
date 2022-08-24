@@ -12,32 +12,34 @@
 #define BUFSIZE 512
 #define SLEEP_TIME 500
 
-DWORD WINAPI StdinThread(HANDLE stdinNamedPipe);
-DWORD WINAPI StdoutThread(HANDLE stdoutNamedPipe);
-
-DWORD ConnectSMBServer(LPCWSTR lpwsHost, LPCWSTR lpwsUserName, LPCWSTR lpwsPassword);
-BOOL UploadFileBySMB(LPCWSTR lpwsSrcPath, LPCWSTR lpwsDstPath);
-BOOL CreateServiceWithSCM(LPCWSTR lpwsSCMServer, LPCWSTR lpwsServiceName, LPCWSTR lpwsServicePath);
+DWORD WINAPI StdinThread(HANDLE hStdoutPipe);
+DWORD WINAPI StdoutThread(HANDLE hStdinPipe);
+DWORD ConnectSMBServer(LPCTSTR lpwsHost, LPCTSTR lpwsUserName, LPCTSTR lpwsPassword);
+BOOL UploadFileBySMB(LPCTSTR lpwsSrcPath, LPCTSTR lpwsDstPath);
+BOOL CreateServiceWithSCM(LPCTSTR lpwsSCMServer, LPCTSTR lpwsServiceName, LPCTSTR lpwsServicePath);
 BOOL CreateStdNamedPipe(LPHANDLE, LPCTSTR);
 VOID OutputError(LPCTSTR, DWORD);
-BOOL ExecuteCommand(LPWSTR lpwsHost);
+BOOL ExecuteCommand(LPTSTR lpwsHost);
+
+HANDLE hStdoutSemaphore;
+HANDLE hStdinSemaphore;
+HANDLE hStdoutPipe = INVALID_HANDLE_VALUE;
+HANDLE hStdinPipe = INVALID_HANDLE_VALUE;
+HANDLE hStdoutThread = INVALID_HANDLE_VALUE;
+HANDLE hStdinThread = INVALID_HANDLE_VALUE;
+DWORD cbRead = 0;
+DWORD cbToRead = 0;
+DWORD dwStdoutThreadId = 0;
+DWORD dwStdinThreadId = 0;
 
 int wmain(int argc, wchar_t* argv[]) {
-    /*LPCWSTR lpwsHost        = TEXT("{{ip}}");
-    LPCWSTR lpwsUsername    = TEXT("{{username})");
-    LPCWSTR lpwsPassword    = TEXT("{{password}}");
-    LPCWSTR lpwsSrcPath     = TEXT("D:\\windows\\repos\\MyPsExec\\x64\\Release\\PsExecService.exe");
-    LPCWSTR lpwsDstPath     = TEXT("\\\\{{ip}}\\admin$\\PsExecService.exe");
-    LPCWSTR lpwsServiceName = TEXT("PSEXESVC");
-    LPCWSTR lpwsServicePath = TEXT("C:\\Windows\\PsExecService.exe");*/
-
-    LPWSTR  lpwsHost        = argv[1];
-    LPWSTR  lpwsUsername    = argv[2];
-    LPWSTR  lpwsPassword    = argv[3];
-    LPWSTR  lpwsSrcPath     = argv[4];
-    LPWSTR  lpwsDstPath     = NULL;
-    LPCWSTR lpwsServiceName = L"PSEXEC";
-    LPCWSTR lpwsServicePath = L"%SystemRoot%\\PsExecService.exe";
+    LPTSTR  lpwsHost        = argv[1];
+    LPTSTR  lpwsUsername    = argv[2];
+    LPTSTR  lpwsPassword    = argv[3];
+    LPTSTR  lpwsSrcPath     = argv[4];
+    LPTSTR  lpwsDstPath     = NULL;
+    LPCTSTR lpwsServiceName = L"PSEXEC";
+    LPCTSTR lpwsServicePath = L"%SystemRoot%\\PsExecService.exe";
 
     lpwsDstPath = (LPWSTR)malloc(MAX_PATH * sizeof(WCHAR));
     if (!lpwsDstPath) {
@@ -47,7 +49,7 @@ int wmain(int argc, wchar_t* argv[]) {
 
     if (!ConnectSMBServer(lpwsHost, lpwsUsername, lpwsPassword)) {
         
-        if (!UploadFileBySMB(lpwsSrcPath, lpwsDstPath)) {
+        if (UploadFileBySMB(lpwsSrcPath, lpwsDstPath)) {
             wprintf(L"[*] Upload Successfully!\n");
             CreateServiceWithSCM(lpwsHost, lpwsServiceName, lpwsServicePath);
         }
@@ -67,9 +69,9 @@ int wmain(int argc, wchar_t* argv[]) {
     return 0;
 }
 
-DWORD ConnectSMBServer(LPCWSTR lpwsHost, LPCWSTR lpwsUserName, LPCWSTR lpwsPassword) {
+DWORD ConnectSMBServer(LPCTSTR lpwsHost, LPCTSTR lpwsUserName, LPCTSTR lpwsPassword) {
     // SMB shared resource.
-    PWCHAR lpwsIPC = new WCHAR[MAX_PATH];
+    PTCHAR lpwsIPC = new TCHAR[MAX_PATH];
     // Return value
     DWORD dwRetVal;
     // Detailed network information
@@ -99,18 +101,17 @@ DWORD ConnectSMBServer(LPCWSTR lpwsHost, LPCWSTR lpwsUserName, LPCWSTR lpwsPassw
     return -1;
 }
 
-BOOL UploadFileBySMB(LPCWSTR lpwsSrcPath, LPCWSTR lpwsDstPath) {
+BOOL UploadFileBySMB(LPCTSTR lpwsSrcPath, LPCTSTR lpwsDstPath) {
     DWORD dwRetVal;
     dwRetVal = CopyFile(lpwsSrcPath, lpwsDstPath, FALSE);
     return dwRetVal > 0 ? TRUE : FALSE;
 }
 
-BOOL CreateServiceWithSCM(LPCWSTR lpwsSCMServer, LPCWSTR lpwsServiceName, LPCWSTR lpwsServicePath) {
+BOOL CreateServiceWithSCM(LPCTSTR lpwsSCMServer, LPCTSTR lpwsServiceName, LPCTSTR lpwsServicePath) {
     wprintf(L"[*] Create Service %s\n", lpwsServiceName);
 
     SC_HANDLE hSCM;
     SC_HANDLE hService;
-    SERVICE_STATUS sStatus;
 
     hSCM = OpenSCManager(lpwsSCMServer, SERVICES_ACTIVE_DATABASE, SC_MANAGER_ALL_ACCESS);
     if (hSCM == NULL) {
@@ -174,23 +175,12 @@ BOOL CreateStdNamedPipe(PHANDLE lpPipe, LPCTSTR lpPipeName) {
     return !(*lpPipe == INVALID_HANDLE_VALUE);
 }
 
-BOOL ExecuteCommand(LPWSTR lpwsHost) {
-    HANDLE	    hStdoutPipe         = INVALID_HANDLE_VALUE;
-    HANDLE      hStdinPipe          = INVALID_HANDLE_VALUE;
-    HANDLE      hStdoutThread       = INVALID_HANDLE_VALUE;
-    HANDLE      hStdinThread        = INVALID_HANDLE_VALUE;
-    LPCTSTR     lpszStdoutPipeName  = L"\\\\{{ip}}\\pipe\\PSEXEC";
-    LPWSTR      lpszStdoutNamedPipe = NULL;
-    TCHAR	    chBuf[BUFSIZE]      = { 0 };
+BOOL ExecuteCommand(LPTSTR lpwsHost) {
+    LPTSTR      lpszStdoutNamedPipe = NULL;
     BOOL	    fSuccess            = FALSE;
     DWORD	    length              = 0;
-    DWORD	    cbRead              = 0;
-    DWORD	    cbToRead            = 0;
-    DWORD       dwStdoutThreadId    = 0;
-    DWORD       dwStdinThreadId     = 0;
-    std::string command;
 
-    lpszStdoutNamedPipe = (LPWSTR)malloc(MAX_PATH * sizeof(WCHAR));
+    lpszStdoutNamedPipe = (LPTSTR)malloc(MAX_PATH * sizeof(lpszStdoutNamedPipe));
     if (lpszStdoutNamedPipe == NULL) {
         return FALSE;
     }
@@ -208,43 +198,26 @@ BOOL ExecuteCommand(LPWSTR lpwsHost) {
 
     // Return if the pipe handle is invalid.
     if (hStdoutPipe == INVALID_HANDLE_VALUE) {
-        _tprintf(TEXT("[!] CreateFile (PSEXEC) fail. GLE=%d.\n"), GetLastError());
+        wprintf(L"[!] CreateFile (PSEXEC) fail. GLE=%d.\n", GetLastError());
         return -1;
     }
 
     // Exit if an error other than ERROR_PIPE_BUSY occurs.
     if (GetLastError() == ERROR_PIPE_BUSY) {
-        _tprintf(TEXT("[!] Could not open pipe (hStdoutPipe). GLE=%d\n"), GetLastError());
+        wprintf(L"[!] Could not open pipe (hStdoutPipe). GLE=%d.\n", GetLastError());
         return -1;
     }
-    _tprintf(TEXT("CreateFile PSEXEC successfully\n"));
+    wprintf(L"[*] CreateFile PSEXEC successfully\n");
 
     // All pipe instances are busy, so wait for 20 seconds.
-    if (WaitNamedPipe(lpszStdoutPipeName, 2000)) {
-        _tprintf(TEXT("[!] Could not open pipe (PSEXEC): 20 second wait timed out.\n"));
+    if (WaitNamedPipe(lpszStdoutNamedPipe, 2000)) {
+        wprintf(L"[!] Could not open pipe (PSEXEC): 20 second wait timed out.\n");
         return -1;
     }
-    _tprintf(TEXT("[*] WaitNamedPipe successfully!\n"));
+    wprintf(L"[*] WaitNamedPipe successfully!\n");
 
-
-    while (true) {
-        wprintf(L"\nPsExec>");
-        getline(std::cin, command);
-        cbToRead = command.length() * sizeof(TCHAR);
-
-        if (!WriteFile(hStdoutPipe, (LPCVOID)command.c_str(), cbToRead, &cbRead, NULL)) {
-            _tprintf(TEXT("[!] WriteFile to server error! GLE = %d\n"), GetLastError());
-            break;
-        }
-        _tprintf(TEXT("[*] WriteFile to server successfully!\n"));
-
-        fSuccess = ReadFile(hStdoutPipe, chBuf, BUFSIZE * sizeof(TCHAR), &cbRead, NULL);
-        if (!fSuccess) {
-            OutputError(TEXT("ReadFile"), GetLastError());
-        }
-
-        wprintf(L"%s", chBuf);
-    }
+    hStdoutSemaphore = CreateSemaphore(NULL, 0, 1, L"StdoutSemaphore");
+    hStdinSemaphore = CreateSemaphore(NULL, 1, 1, L"StdinSemaphore");
 
     hStdoutThread = CreateThread(
         NULL,
@@ -258,15 +231,75 @@ BOOL ExecuteCommand(LPWSTR lpwsHost) {
         return FALSE;
     }
 
+    hStdinThread = CreateThread(
+        NULL,
+        0,
+        StdinThread,
+        (LPVOID)hStdoutPipe,
+        0,
+        &dwStdinThreadId);
+    if (hStdinThread == NULL) {
+        wprintf(L"[!] Create Stdin Thread failed, GLE = %d.\n", GetLastError());
+        return FALSE;
+    }
+
+    WaitForSingleObject(hStdoutThread, INFINITE);
+    WaitForSingleObject(hStdinThread, INFINITE);
+
     CloseHandle(hStdoutPipe);
     CloseHandle(hStdoutThread);
+    CloseHandle(hStdinPipe);
+    CloseHandle(hStdinThread);
     return 0;
 }
 
-DWORD WINAPI StdinThread(HANDLE stdinNamedPipe) {
+DWORD WINAPI StdinThread(HANDLE hPipe) {
+    DWORD       dwWait      = 0;
+    std::wstring command;
+
+    while (true) {
+        dwWait = WaitForSingleObject(hStdinSemaphore, INFINITE);
+
+        wprintf(L"\nPsExec>");
+        std::getline(std::wcin, command);
+
+        cbToRead = command.length() * sizeof(command);
+        if (!WriteFile(hPipe, (LPCVOID)command.c_str(), cbToRead, &cbRead, NULL)) {
+            wprintf(L"[!] WriteFile to server error! GLE = %d.\n", GetLastError());
+            break;
+        }
+        wprintf(L"[*] WriteFile to server successfully! message = %s, length = %d\n", command.c_str(), cbRead);
+
+        ReleaseSemaphore(hStdoutSemaphore, 1, NULL);
+    }
     
+    return TRUE;
 }
 
-DWORD WINAPI StdoutThread(HANDLE stdoutNamedPipe) {
+DWORD WINAPI StdoutThread(HANDLE hPipe) {
+    HANDLE hHeap = GetProcessHeap();
+    LPSTR  chBuf = (LPSTR)HeapAlloc(hHeap, 0, BUFSIZE * sizeof(chBuf));
+    DWORD  fSuccess = 0;
+    while (true) {
+        if (chBuf == NULL) {
+            return FALSE;
+        }
+        ZeroMemory(chBuf, BUFSIZE * sizeof(chBuf));
+        WaitForSingleObject(hStdoutSemaphore, INFINITE);
 
+        do {
+            fSuccess = ReadFile(hPipe, chBuf, BUFSIZE * sizeof(CHAR), &cbRead, NULL);
+            if (!fSuccess && GetLastError() != ERROR_MORE_DATA) {
+                break;
+            }
+
+            printf("%s", chBuf);
+        } while (!fSuccess);
+
+        ReleaseSemaphore(hStdinSemaphore, 1, NULL);
+    }
+
+    HeapFree(hHeap, 0, chBuf);
+
+    return TRUE;
 }
