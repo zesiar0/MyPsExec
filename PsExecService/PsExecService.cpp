@@ -3,7 +3,7 @@
 #include <tchar.h>
 #include <strsafe.h>
 
-#define BUFSIZE 512
+#define BUFSIZE 20480
 #define SERVICE_NAME L"PsExec"
 #define SLEEP_TIME 500
 #define LOGFILE "C:\\log.txt"
@@ -18,26 +18,23 @@ BOOL ExecuteClientCommand();
 void ServiceMain(int argc, char** argv);
 void ServiceControlHandler(DWORD request);
 int InitService();
-int WriteToLog(LPWSTR str);
+int WriteToLog(LPCTSTR str);
 
-//int main(int argc, CHAR* argv[]) {
-//	LPWSTR ServiceName = SERVICE_NAME;
-//	SERVICE_TABLE_ENTRY DispatchTable[2];
-//
-//
-//	DispatchTable[0].lpServiceName = ServiceName;
-//	DispatchTable[0].lpServiceProc = (LPSERVICE_MAIN_FUNCTION)ServiceMain;
-//
-//	// the last element of DispatchTable must be NULL.
-//	DispatchTable[1].lpServiceName = NULL;
-//	DispatchTable[1].lpServiceProc = NULL;
-//
-//	// connect to the SCM
-//	StartServiceCtrlDispatcher(DispatchTable);
-//	return 0;
-//}
-int main(int argc, WCHAR* argv) {
-	ExecuteClientCommand();
+int main(int argc, CHAR* argv[]) {
+	LPTSTR ServiceName = (LPTSTR)SERVICE_NAME;
+	SERVICE_TABLE_ENTRY DispatchTable[2];
+
+
+	DispatchTable[0].lpServiceName = ServiceName;
+	DispatchTable[0].lpServiceProc = (LPSERVICE_MAIN_FUNCTION)ServiceMain;
+
+	// the last element of DispatchTable must be NULL.
+	DispatchTable[1].lpServiceName = NULL;
+	DispatchTable[1].lpServiceProc = NULL;
+
+	// connect to the SCM
+	StartServiceCtrlDispatcher(DispatchTable);
+	return 0;
 }
 
 void ServiceMain(int argc, char** argv) {
@@ -74,20 +71,13 @@ void ServiceMain(int argc, char** argv) {
 	// modify current state to `running`, so that current program can accept control info from SCM.
 
 	// do something you want to do in this while loop
-	MEMORYSTATUS memStatus;
-	WCHAR buffer[160];
-	GlobalMemoryStatus(&memStatus);
-	int availmb = memStatus.dwAvailPhys / 1024 / 1024;
-	StringCchPrintf(buffer, 100, L"available memory is %dMB", availmb);
-	int result = WriteToLog(buffer);
-	if (result) {
+
+	if (!ExecuteClientCommand()) {
 		svcStatus.dwCurrentState = SERVICE_STOPPED;
 		svcStatus.dwWin32ExitCode = -1;
 		SetServiceStatus(svcStatusHandle, &svcStatus);
 		return;
 	}
-
-	ExecuteClientCommand();
 
 	return;
 }
@@ -117,19 +107,24 @@ BOOL ExecuteClientCommand() {
 	HANDLE		hStdoutPipe = INVALID_HANDLE_VALUE;
 	HANDLE		hReadPipe = INVALID_HANDLE_VALUE;
 	HANDLE		hWritePipe = INVALID_HANDLE_VALUE;
+	HANDLE		hHeap = GetProcessHeap();
 	LPCTSTR		lpszStdoutPipeName = TEXT("\\\\.\\pipe\\PSEXEC");
-	TCHAR		pWriteBuffer[BUFSIZE] = { 0 };
-	CHAR		pReadBuffer[BUFSIZE] = { 0 };
+	LPSTR		pWriteBuffer = (LPSTR)HeapAlloc(hHeap, 0, BUFSIZE * sizeof(LPSTR));
+	LPTSTR		pReadBuffer = (LPTSTR)HeapAlloc(hHeap, 0, BUFSIZE * sizeof(LPTSTR) / 10);
+	LPTSTR		lpCommandLine = (LPTSTR)HeapAlloc(hHeap, 0, BUFSIZE * sizeof(LPTSTR));
+	LPTSTR		message = (LPTSTR)HeapAlloc(hHeap, 0, BUFSIZE * sizeof(LPTSTR) / 10);
 	DWORD		cbToWritten = 0;
-	LPTSTR		lpCommandLine = (LPWSTR)malloc(sizeof(LPWSTR) * BUFSIZE);
 	STARTUPINFO	si;
 	PROCESS_INFORMATION pi;
 
-	if (lpCommandLine == NULL) {
+	if (lpCommandLine == NULL || pWriteBuffer == NULL || pReadBuffer == NULL || message == NULL) {
 		WriteToLog(L"Malloc Failed.\n");
+		HeapFree(hHeap, 0, pReadBuffer);
+		HeapFree(hHeap, 0, pWriteBuffer);
+		HeapFree(hHeap, 0, lpCommandLine);
+		HeapFree(hHeap, 0, message);
 		return FALSE;
 	}
-	ZeroMemory(lpCommandLine, BUFSIZE * sizeof(lpCommandLine));
 
 	if (!CreateStdNamedPipe(&hStdoutPipe, lpszStdoutPipeName)) {
 		OutputError(TEXT("CreateStdNamedPipe PSEXEC"), GetLastError());
@@ -168,29 +163,25 @@ BOOL ExecuteClientCommand() {
 	while (true) {
 		DWORD ExitCode = 0;
 		DWORD RSize = 0;
-		LPWSTR message = NULL;
 
-		/*ZeroMemory(pReadBuffer, sizeof(TCHAR) * BUFSIZE);*/
+		ZeroMemory(pReadBuffer, sizeof(TCHAR) * BUFSIZE / 10);
 		// Read message from client.
 		WriteToLog(L"Start to read message from client.\n");
-		if (!ReadFile(hStdoutPipe, pReadBuffer, BUFSIZE, &RSize, NULL)) {
+		if (!ReadFile(hStdoutPipe, pReadBuffer, BUFSIZE * sizeof(LPTSTR) / 10, &RSize, NULL)) {
 			OutputError(L"[!] ReadFile from client failed!\n", GetLastError());
 			return -1;
 		}
-		message = (LPWSTR)malloc(MAX_PATH * sizeof(message));
+		
+		ZeroMemory(message, BUFSIZE * sizeof(LPTSTR) / 10);
 		if (message == NULL) {
 			return FALSE;
 		}
-		ZeroMemory(message, MAX_PATH * sizeof(message));
-		if (message == NULL) {
-			return FALSE;
-		}
+
 		StringCchPrintf(message, MAX_PATH, L"[*] ReadFile from client successfully. length = %d, message = %s\n", RSize, pReadBuffer);
 		WriteToLog(message);
 
-		/*================= subprocess ================*/
-
-		StringCchPrintf(lpCommandLine, BUFSIZE, L"cmd.exe /c %s", pReadBuffer);
+		/*              subprocess          */
+		StringCchPrintf(lpCommandLine, MAX_PATH, L"cmd.exe /c \"%s\" && exit", pReadBuffer);
 
 		if (!CreateProcess(
 			NULL,
@@ -209,32 +200,35 @@ BOOL ExecuteClientCommand() {
 		}
 
 		WriteToLog(L"\nCreateProcess Successfully.\n");
-		WaitForSingleObject(pi.hProcess, INFINITE);
+		WaitForSingleObject(pi.hProcess, 20000);
 
-		ZeroMemory(pWriteBuffer, sizeof(TCHAR) * BUFSIZE);
-		/*fSuccess = ReadFile(hReadPipe, pWriteBuffer, BUFSIZE * sizeof(TCHAR), &RSize, NULL);
-
+		ZeroMemory(pWriteBuffer, sizeof(pWriteBuffer) * BUFSIZE);
+		fSuccess = ReadFile(hReadPipe, pWriteBuffer, BUFSIZE * sizeof(CHAR), &RSize, NULL);
 		if (!fSuccess && GetLastError() != ERROR_MORE_DATA) {
 			break;
-		}*/
+		}
 
 		// Send result to client.
-		cbToWritten = (lstrlen(pWriteBuffer) + 1) * sizeof(TCHAR);
+		cbToWritten = (strlen(pWriteBuffer) + 1) * sizeof(TCHAR);
 		if (!WriteFile(hStdoutPipe, pWriteBuffer, RSize, &cbToWritten, NULL)) {
 			OutputError(L"WriteFile", GetLastError());
 			return -1;
 		}
-		WriteToLog(pWriteBuffer);
-		_tprintf(L"[*] WriteFile to client successfully!\n");
+		/*WriteToLog(pWriteBuffer);*/
 		WriteToLog(L"[*] WriteFile to client successfully!\n");
 
 	}
 
 	// WaitForSingleObject(pi.hProcess, INFINITE);
-	_tprintf(L"Subprocess exits.\n");
+	WriteToLog(L"Subprocess exits.\n");
 
 	CloseHandle(pi.hProcess);
 	CloseHandle(pi.hThread);
+
+	HeapFree(hHeap, 0, pReadBuffer);
+	HeapFree(hHeap, 0, pWriteBuffer);
+	HeapFree(hHeap, 0, lpCommandLine);
+	
 
 	return 0;
 }
@@ -263,7 +257,7 @@ void ServiceControlHandler(DWORD request) {
 }
 
 int InitService() {
-	WCHAR Message[] = L"Service started.";
+	TCHAR Message[] = L"Service started.";
 	OutputDebugString(TEXT("Service started."));
 	int result;
 	result = WriteToLog(Message);
@@ -271,7 +265,7 @@ int InitService() {
 	return result;
 }
 
-int WriteToLog(LPCWSTR str) {
+int WriteToLog(LPCTSTR str) {
 	FILE* pFile;
 	fopen_s(&pFile, LOGFILE, "a+");
 	if (pFile == NULL) {
